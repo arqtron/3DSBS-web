@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Visualizador SBS en HSBS</title>
+    <style>
+        /* Reset, Layout */
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { height: 100%; overflow: hidden; background-color: #f0f0f0; font-family: sans-serif; }
+        body { display: flex; flex-direction: column; }
+
+        /* Controles */
+        .controls {
+            display: flex; flex-wrap: wrap; gap: 10px;
+            /* Padding inicial */
+            padding: 10px;
+            background-color: #e9e9e9;
+            /* Borde inicial */
+            border-bottom: 1px solid #ccc;
+            flex-shrink: 0;
+            align-items: center;
+            /* Añadir overflow hidden y transición para altura/padding/border */
+            overflow: hidden;
+            transition: height 0.3s ease-out, padding 0.3s ease-out, border-width 0.3s ease-out, opacity 0.3s ease-out;
+            /* Opacidad inicial */
+            opacity: 1;
+            /* La altura se manejará automáticamente por el contenido inicialmente */
+        }
+        /* Estilos de botones y label */
+        button, label[for="fileInput"] { padding: 8px 12px; border: none; border-radius: 4px; cursor: pointer; color: white; font-size: 0.9rem; text-align: center; }
+        button:hover:not(:disabled), label[for="fileInput"]:hover { opacity: 0.85; }
+        button:disabled { background-color: #cccccc !important; cursor: not-allowed; opacity: 0.6; }
+        label[for="fileInput"] { background-color: #5cb85c; display: inline-block; }
+        #hsbsToggleButton { background-color: #007bff; }
+        #swapButton { background-color: #ffc107; color: #333; }
+        input[type="file"]#fileInput { display: none; }
+
+        /* Visor y Canvas  */
+        #viewer-container { flex-grow: 1; width: 100%; background-color: #000; overflow: hidden; position: relative; display: flex; justify-content: center; align-items: center; }
+        #viewer-canvas { display: block; max-width: 100%; max-height: 100%; cursor: pointer; }
+
+        /* Info */
+        .nav-info { margin-left: 15px; font-size: 0.9rem; color: #333; white-space: nowrap; }
+        .help-text { margin-left: auto; padding-right: 10px; font-size: 0.85rem; color: #555; text-align: right; }
+
+        /* --- ESTILO PARA OCULTAR CONTROLES --- */
+        body.controls-hidden .controls {
+            /* Reducir altura, padding y borde a cero */
+            height: 0;
+            padding-top: 0;
+            padding-bottom: 0;
+            border-bottom-width: 0;
+            opacity: 0; /* Mantener para efecto visual suave */
+        }
+    </style>
+</head>
+<body>
+    <!-- Contenedor de controles -->
+    <div class="controls">
+        <input type="file" id="fileInput" accept="image/*" multiple>
+        <label for="fileInput">Cargar Imagen/es SBS</label>
+        <button id="hsbsToggleButton" disabled>Activar HSBS (H)</button>
+        <button id="swapButton" disabled>Intercambiar I/D (I)</button>
+        <span id="navInfo" class="nav-info"></span>
+         <span class="help-text">
+             [F]=Ocultar Menú, [Espacio]/Click=Siguiente
+         </span>
+    </div>
+    <!-- Contenedor del visor -->
+    <div id="viewer-container">
+        <canvas id="viewer-canvas"></canvas>
+    </div>
+
+    <script>
+        // JavaScript
+        (function() {
+            const fileInput = document.getElementById('fileInput');
+            const viewerContainer = document.getElementById('viewer-container');
+            const canvas = document.getElementById('viewer-canvas');
+            const ctx = canvas.getContext('2d');
+            const hsbsToggleButton = document.getElementById('hsbsToggleButton');
+            const swapButton = document.getElementById('swapButton');
+            const navInfoSpan = document.getElementById('navInfo');
+            const bodyElement = document.body;
+            let loadedImages = [];
+            let currentImageIndex = -1;
+            let sourceImage = null;
+            let isHsbsModeActive = false;
+            let isSwapped = false;
+            let areControlsHidden = false;
+            let resizeTimeout;
+
+            fileInput.addEventListener('change', handleFileSelect);
+            window.addEventListener('resize', handleResize);
+            document.addEventListener('keydown', handleKeyPress);
+            hsbsToggleButton.addEventListener('click', toggleHsbsMode);
+            swapButton.addEventListener('click', toggleSwapMode);
+            canvas.addEventListener('click', handleCanvasClick);
+
+            function handleFileSelect(event) {
+                const files = event.target.files; if (!files || files.length === 0) { loadedImages = []; currentImageIndex = -1; updateViewer(); return; }
+                loadedImages = []; currentImageIndex = -1; let filesProcessed = 0; const totalFiles = files.length; console.log(`Cargando ${totalFiles} archivo(s)...`);
+                Array.from(files).forEach((file, index) => {
+                    if (file.type.startsWith('image/')) {
+                        const reader = new FileReader();
+                        reader.onload = (e) => { const img = new Image(); img.onload = () => { loadedImages.push({ image: img, name: file.name }); filesProcessed++; if (currentImageIndex === -1) { currentImageIndex = 0; updateViewer(); } if (filesProcessed === totalFiles) { console.log("Carga completada."); updateViewer(); } }; img.onerror = () => { console.error(`Error img: ${file.name}`); filesProcessed++; if (filesProcessed === totalFiles) updateViewer(); }; img.src = e.target.result; }; reader.onerror = () => { console.error(`Error file: ${file.name}`); filesProcessed++; if (filesProcessed === totalFiles) updateViewer(); }; reader.readAsDataURL(file);
+                    } else { console.warn(`Omitido: ${file.name}`); filesProcessed++; if (filesProcessed === totalFiles) updateViewer(); }
+                });
+                 fileInput.value = '';
+             }
+            function toggleHsbsMode() { if (loadedImages.length === 0) return; isHsbsModeActive = !isHsbsModeActive; updateViewer(); }
+            function toggleSwapMode() { if (loadedImages.length === 0) return; isSwapped = !isSwapped; updateViewer(); }
+            function navigateImages(direction) { if (loadedImages.length <= 1) return; if (direction === 'next') { currentImageIndex = (currentImageIndex + 1) % loadedImages.length; } else if (direction === 'prev') { currentImageIndex = (currentImageIndex - 1 + loadedImages.length) % loadedImages.length; } updateViewer(); }
+
+            function toggleControlsVisibility() {
+                areControlsHidden = !areControlsHidden;
+                bodyElement.classList.toggle('controls-hidden', areControlsHidden);
+                // Disparar resize sigue siendo útil para que el canvas se ajuste
+                window.dispatchEvent(new Event('resize'));
+            }
+
+            function handleKeyPress(event) {
+                 if (event.ctrlKey || event.altKey || event.metaKey) return;
+                 const key = event.key.toUpperCase();
+                 if (key === 'F') { toggleControlsVisibility(); return; }
+                 if (loadedImages.length === 0) return;
+                if (key === 'H') { toggleHsbsMode(); }
+                else if (key === 'I') { toggleSwapMode(); }
+                else if (event.key === ' ') { event.preventDefault(); navigateImages('next'); }
+            }
+            function handleResize() { clearTimeout(resizeTimeout); resizeTimeout = setTimeout(() => { if (loadedImages.length > 0) updateViewer(); }, 150); }
+            function handleCanvasClick() { if (loadedImages.length > 1) navigateImages('next'); }
+
+            function updateViewer() {
+                 const hasImages = loadedImages.length > 0;
+                 hsbsToggleButton.disabled = !hasImages; swapButton.disabled = !hasImages;
+                 hsbsToggleButton.textContent = isHsbsModeActive ? "Desactivar HSBS [H]" : "Activar HSBS [H]";
+                 swapButton.textContent = `Intercambiar I/D (${isSwapped ? 'D/I' : 'I/D'}) [I]`;
+
+                 ctx.clearRect(0, 0, canvas.width, canvas.height);
+                 if (!hasImages) { canvas.width = 0; canvas.height = 0; viewerContainer.innerHTML = '<p style="color: #aaa; font-size: 1.2em;">Carga imagen&#47;es SBS</p>'; navInfoSpan.textContent = ""; if (!viewerContainer.contains(canvas)) viewerContainer.appendChild(canvas); return; }
+                 else if (viewerContainer.querySelector('p')) { viewerContainer.innerHTML = ''; viewerContainer.appendChild(canvas); }
+
+                 if (currentImageIndex < 0 || currentImageIndex >= loadedImages.length) { currentImageIndex = 0; }
+                 if (currentImageIndex >= loadedImages.length) { currentImageIndex = -1; updateViewer(); return; }
+                 sourceImage = loadedImages[currentImageIndex].image;
+                 navInfoSpan.textContent = `Imagen ${currentImageIndex + 1} de ${loadedImages.length} (${loadedImages[currentImageIndex].name})`;
+
+                 // Asegurar clase correcta antes de renderizar
+                 bodyElement.classList.toggle('controls-hidden', areControlsHidden);
+
+                 renderOnCanvas();
+            }
+
+            function renderOnCanvas() {
+                if (!sourceImage) return;
+                requestAnimationFrame(() => {
+                    const imgWidth = sourceImage.naturalWidth; const imgHeight = sourceImage.naturalHeight; const imgHalfWidth = imgWidth / 2;
+                    const containerWidth = viewerContainer.clientWidth; const containerHeight = viewerContainer.clientHeight;
+                    canvas.width = containerWidth; canvas.height = containerHeight; ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    const sourceLeft = { x: 0, y: 0, w: imgHalfWidth, h: imgHeight }; const sourceRight = { x: imgHalfWidth, y: 0, w: imgHalfWidth, h: imgHeight };
+
+                    if (isHsbsModeActive) {
+                        const compressedHalfW = imgHalfWidth * 0.5; const compressedHalfH = imgHeight; const compressedHalfRatio = compressedHalfW / compressedHalfH;
+                        const targetAreaW = containerWidth / 2; const targetAreaH = containerHeight; const targetAreaRatio = targetAreaW / targetAreaH;
+                        let drawW_final, drawH_final;
+                        if (compressedHalfRatio > targetAreaRatio) { drawW_final = targetAreaW; drawH_final = drawW_final / compressedHalfRatio; } else { drawH_final = targetAreaH; drawW_final = drawH_final * compressedHalfRatio; }
+                        const drawY = (targetAreaH - drawH_final) / 2; const drawX_L = (targetAreaW - drawW_final) / 2; const drawX_R = targetAreaW + (targetAreaW - drawW_final) / 2;
+                        const destLeft = { x: drawX_L, y: drawY, w: drawW_final, h: drawH_final }; const destRight = { x: drawX_R, y: drawY, w: drawW_final, h: drawH_final };
+                        if (isSwapped) { ctx.drawImage(sourceImage, sourceRight.x, sourceRight.y, sourceRight.w, sourceRight.h, destLeft.x, destLeft.y, destLeft.w, destLeft.h); ctx.drawImage(sourceImage, sourceLeft.x, sourceLeft.y, sourceLeft.w, sourceLeft.h, destRight.x, destRight.y, destRight.w, destRight.h); }
+                        else { ctx.drawImage(sourceImage, sourceLeft.x, sourceLeft.y, sourceLeft.w, sourceLeft.h, destLeft.x, destLeft.y, destLeft.w, destLeft.h); ctx.drawImage(sourceImage, sourceRight.x, sourceRight.y, sourceRight.w, sourceRight.h, destRight.x, destRight.y, destRight.w, destRight.h); }
+                    } else {
+                        let fullDrawWidth, fullDrawHeight; const imgRatio = imgWidth / imgHeight; const containerRatio = containerWidth / containerHeight;
+                        if (imgRatio > containerRatio) { fullDrawWidth = containerWidth; fullDrawHeight = fullDrawWidth / imgRatio; } else { fullDrawHeight = containerHeight; fullDrawWidth = fullDrawHeight * imgRatio; }
+                        const fullDrawX = (containerWidth - fullDrawWidth) / 2; const fullDrawY = (containerHeight - fullDrawHeight) / 2;
+                        const destWidthHalf = fullDrawWidth / 2; const destHeightHalf = fullDrawHeight;
+                        const destLeft = { x: fullDrawX, y: fullDrawY, w: destWidthHalf, h: destHeightHalf }; const destRight = { x: fullDrawX + destWidthHalf, y: fullDrawY, w: destWidthHalf, h: destHeightHalf };
+                        if (isSwapped) { ctx.drawImage(sourceImage, sourceRight.x, sourceRight.y, sourceRight.w, sourceRight.h, destLeft.x, destLeft.y, destLeft.w, destLeft.h); ctx.drawImage(sourceImage, sourceLeft.x, sourceLeft.y, sourceLeft.w, sourceLeft.h, destRight.x, destRight.y, destRight.w, destRight.h); }
+                        else { ctx.drawImage(sourceImage, sourceLeft.x, sourceLeft.y, sourceLeft.w, sourceLeft.h, destLeft.x, destLeft.y, destLeft.w, destLeft.h); ctx.drawImage(sourceImage, sourceRight.x, sourceRight.y, sourceRight.w, sourceRight.h, destRight.x, destRight.y, destRight.w, destRight.h); }
+                    }
+                });
+            }
+
+            // Inicializar
+            updateViewer();
+            bodyElement.classList.toggle('controls-hidden', areControlsHidden);
+
+        })();
+    </script>
+</body>
+</html>
